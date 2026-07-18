@@ -19,26 +19,66 @@ until nginx_up; do
   sleep 3
 done
 
+issue() {
+  domain=$1; shift
+  certbot certonly --webroot -w /var/www/certbot \
+    -d "$domain" \
+    --register-unsafely-without-email --agree-tos \
+    $STAGING_FLAG --non-interactive \
+    --deploy-hook "touch ${RELOAD_FLAG}" \
+    "$@"
+}
+
+# certbot must own live/<domain>, so move the self-signed placeholder aside
+# first — and restore it on failure, otherwise a failed issuance would leave
+# nginx pointing at cert files that no longer exist.
+first_issue() {
+  domain=$1
+  backup="${CONF_DIR}/.placeholder/${domain}"
+  rm -rf "$backup" "${CONF_DIR}/archive/${domain}"
+  mkdir -p "${CONF_DIR}/.placeholder"
+  [ ! -d "${CONF_DIR}/live/${domain}" ] || mv "${CONF_DIR}/live/${domain}" "$backup"
+  if issue "$domain"; then
+    rm -rf "$backup"
+  else
+    echo "[certbot] Issuance failed for ${domain} — restoring placeholder; will retry."
+    if [ ! -d "${CONF_DIR}/live/${domain}" ] && [ -d "$backup" ]; then
+      mv "$backup" "${CONF_DIR}/live/${domain}"
+    fi
+  fi
+}
+
+# The ACME server URL is pinned into renewal/<domain>.conf at first issuance,
+# so flipping STAGING later must force a reissue — `certbot renew` alone would
+# keep renewing against the stored (now wrong) server forever.
+env_mismatch() {
+  conf="${CONF_DIR}/renewal/${1}.conf"
+  if [ -n "$STAGING_FLAG" ]; then
+    ! grep -q "acme-staging" "$conf"
+  else
+    grep -q "acme-staging" "$conf"
+  fi
+}
+
 issue_or_renew() {
   for domain in $(echo "$DOMAINS" | tr ',' ' '); do
     # Real issuance is gated on the renewal config, NOT the live/ files,
     # because a self-signed placeholder also sits in live/.
     if [ ! -f "${CONF_DIR}/renewal/${domain}.conf" ]; then
       echo "[certbot] First issuance for ${domain}."
-      # Remove the self-signed placeholder so certbot owns the live/ dir
-      rm -rf "${CONF_DIR}/live/${domain}" \
-             "${CONF_DIR}/archive/${domain}"
-      certbot certonly --webroot -w /var/www/certbot \
-        -d "$domain" \
-        --register-unsafely-without-email --agree-tos \
-        $STAGING_FLAG --non-interactive \
-        --deploy-hook "touch ${RELOAD_FLAG}"
+      first_issue "$domain"
+    elif env_mismatch "$domain"; then
+      echo "[certbot] ACME environment changed for ${domain} — forcing reissue."
+      issue "$domain" --force-renewal \
+        || echo "[certbot] Reissue failed for ${domain} — will retry."
     fi
   done
 
-  # Renew everything already managed (no-op if nothing is due)
+  # Renew everything already managed (no-op if nothing is due). Guarded so a
+  # transient failure retries on the 12h cadence instead of killing the loop.
   certbot renew --webroot -w /var/www/certbot \
-    --deploy-hook "touch ${RELOAD_FLAG}"
+    --deploy-hook "touch ${RELOAD_FLAG}" \
+    || echo "[certbot] Renew failed — will retry in 12h."
 }
 
 # Run once at startup, then every 12h

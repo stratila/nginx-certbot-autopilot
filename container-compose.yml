@@ -1,4 +1,4 @@
-# DOMAINS is defined once in domains.env (see the sync note there).
+# DOMAINS and STAGING are defined once in domains.env (see the notes there).
 
 networks:
   certbot-nginx-net:
@@ -45,8 +45,6 @@ services:
       - nginx
     env_file:
       - domains.env
-    environment:
-      STAGING: "1"
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
       - ./certbot/entrypoint.sh:/entrypoint.sh:ro
