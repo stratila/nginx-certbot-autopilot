@@ -6,6 +6,19 @@ RELOAD_FLAG="${CONF_DIR}/.reload-needed"
 STAGING_FLAG=""
 [ "${STAGING:-0}" = "1" ] && STAGING_FLAG="--staging"
 
+# sh runs as PID 1 here, and PID 1 ignores signals it has no handler for —
+# without this trap `podman stop` would hang for the kill timeout and end in
+# SIGKILL. A foreground sleep would also defer the trap until it finishes, so
+# snooze backgrounds the sleep and waits on it; the signal interrupts the wait.
+trap 'echo "[certbot] Stop signal received — exiting."; kill "${sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
+
+snooze() {
+  sleep "$1" &
+  sleep_pid=$!
+  wait "$sleep_pid" || true
+  sleep_pid=""
+}
+
 # Wait until nginx is actually serving the challenge path before issuing.
 # busybox wget exits 1 on any HTTP error, so look for an HTTP status line
 # in the output instead (a 404 still means nginx answered).
@@ -16,7 +29,7 @@ nginx_up() {
 }
 until nginx_up; do
   echo "[certbot] Waiting for nginx to be reachable..."
-  sleep 3
+  snooze 3
 done
 
 issue() {
@@ -84,5 +97,5 @@ issue_or_renew() {
 # Run once at startup, then every 12h
 while true; do
   issue_or_renew
-  sleep 12h
+  snooze 12h
 done
