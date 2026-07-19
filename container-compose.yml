@@ -41,8 +41,9 @@ services:
   certbot:
     image: docker.io/certbot/certbot
     container_name: certbot
-    depends_on:
-      - nginx
+    # No depends_on: podman turns it into a hard libpod dependency that fails
+    # once the one-shot cert-bootstrap container has exited. entrypoint.sh
+    # polls nginx over HTTP instead, which covers the ordering.
     env_file:
       - domains.env
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
